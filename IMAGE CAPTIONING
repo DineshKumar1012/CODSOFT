@@ -1,0 +1,133 @@
+import numpy as np
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+from tensorflow.keras.preprocessing import image
+from tensorflow.keras.applications.inception_v3 import InceptionV3, preprocess_input
+from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, Dense, Embedding, LSTM
+
+# Download and load the InceptionV3 model pre-trained on ImageNet
+base_model = InceptionV3(weights='imagenet')
+image_model = Model(inputs=base_model.input, outputs=base_model.layers[-2].output)
+
+# Define the image preprocessing function
+def preprocess_image(img_path):
+    img = image.load_img(img_path, target_size=(299, 299))
+    img_array = image.img_to_array(img)
+    img_array = np.expand_dims(img_array, axis=0)
+    img_array = preprocess_input(img_array)
+    return img_array
+
+# Load your own image for testing
+img_path = 'path/to/your/image.jpg'
+img_array = preprocess_image(img_path)
+
+# Get the image features from the InceptionV3 model
+img_features = image_model.predict(img_array)
+
+# Load the pre-trained GloVe word embeddings
+# Download the GloVe file from https://nlp.stanford.edu/projects/glove/
+glove_file = 'path/to/glove.6B.50d.txt'
+embeddings_index = {}
+with open(glove_file, 'r', encoding='utf-8') as f:
+    for line in f:
+        values = line.split()
+        word = values[0]
+        coefs = np.asarray(values[1:], dtype='float32')
+        embeddings_index[word] = coefs
+
+# Load your dataset of image captions
+# Each entry in the dataset should be a tuple (image_path, [caption1, caption2, ...])
+# You need to prepare your dataset accordingly
+dataset = [
+    ('path/to/image1.jpg', ['a caption for image 1', 'another caption for image 1']),
+    ('path/to/image2.jpg', ['a caption for image 2', 'another caption for image 2']),
+    # Add more entries as needed
+]
+
+# Create a list of all captions
+all_captions = [caption for _, captions in dataset for caption in captions]
+
+# Tokenize the captions
+tokenizer = keras.preprocessing.text.Tokenizer()
+tokenizer.fit_on_texts(all_captions)
+vocab_size = len(tokenizer.word_index) + 1
+
+# Create sequences of input data (image features and caption sequences)
+input_images = []
+input_captions = []
+
+for img_path, captions in dataset:
+    img_array = preprocess_image(img_path)
+    img_features = image_model.predict(img_array)
+    for caption in captions:
+        caption_seq = tokenizer.texts_to_sequences([caption])[0]
+        for i in range(1, len(caption_seq)):
+            in_seq, out_seq = caption_seq[:i], caption_seq[i]
+            in_seq = pad_sequences([in_seq], maxlen=maxlen)[0]
+            input_images.append(img_features)
+            input_captions.append(in_seq)
+
+input_images = np.array(input_images)
+input_captions = np.array(input_captions)
+
+# Create the model architecture
+embedding_dim = 50  # Use the dimension of your GloVe embeddings
+maxlen = 20  # Maximum length of the caption sequence
+
+embedding_matrix = np.zeros((vocab_size, embedding_dim))
+for word, i in tokenizer.word_index.items():
+    embedding_vector = embeddings_index.get(word)
+    if embedding_vector is not None:
+        embedding_matrix[i] = embedding_vector
+
+embedding_layer = Embedding(
+    vocab_size,
+    embedding_dim,
+    weights=[embedding_matrix],
+    input_length=maxlen,
+    trainable=False
+)
+
+image_input = Input(shape=(img_features.shape[1],))
+image_model = Dense(256, activation='relu')(image_input)
+
+caption_input = Input(shape=(maxlen,))
+caption_model = embedding_layer(caption_input)
+caption_model = LSTM(256)(caption_model)
+
+# Combine image and caption models
+merged = layers.concatenate([image_model, caption_model])
+output_layer = Dense(vocab_size, activation='softmax')(merged)
+
+model = Model(inputs=[image_input, caption_input], outputs=output_layer)
+
+# Compile the model
+model.compile(loss='sparse_categorical_crossentropy', optimizer='adam')
+
+# Train the model (replace 'labels' with your actual captions)
+labels = np.expand_dims(input_captions[:, -1], -1)
+model.fit([input_images, input_captions], labels, epochs=10, batch_size=32)
+
+# Function to generate captions for a given image
+def generate_caption(img_path):
+    img_array = preprocess_image(img_path)
+    img_features = image_model.predict(img_array)
+    in_text = 'startseq'
+    for _ in range(maxlen):
+        sequence = tokenizer.texts_to_sequences([in_text])[0]
+        sequence = pad_sequences([sequence], maxlen=maxlen)
+        yhat = model.predict([np.array([img_features]), np.array(sequence)], verbose=0)
+        yhat = np.argmax(yhat)
+        word = tokenizer.index_word[yhat]
+        in_text += ' ' + word
+        if word == 'endseq':
+            break
+    return in_text
+
+# Test the model with a new image
+test_img_path = 'path/to/test/image.jpg'
+generated_caption = generate_caption(test_img_path)
+print(generated_caption)
